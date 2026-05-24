@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmniVocal — ConsciousNode SoftWorks</title>
+<meta name="description" content="Browser-native voice synthesis. Single file. Zero dependencies. Neural TTS that runs entirely offline.">
+<meta property="og:title" content="OmniVocal — ConsciousNode SoftWorks">
+<meta property="og:description" content="Browser-native neural voice synthesis. Single file. Zero dependencies. Record your voice, train a .pop2 identity, synthesize anything.">
+<meta property="og:type" content="website">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;800&display=swap');
+  :root {
+    --bg: #080a0e; --bg1: #0d1117; --bg2: #131920;
+    --border: #1e2d42; --text: #c9d8e8; --dim: #5a7a96;
+    --accent: #00d4ff; --gold: #f0b429; --green: #22c55e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Space Mono', monospace; font-size: 14px;
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 40px 24px;
+  }
+  .card {
+    max-width: 600px; width: 100%;
+    border: 1px solid var(--border); background: var(--bg1);
+    padding: 48px 40px;
+  }
+  .logo {
+    font-family: 'Syne', sans-serif; font-weight: 800;
+    font-size: 36px; color: var(--accent); letter-spacing: -1px;
+    margin-bottom: 6px;
+  }
+  .sub {
+    font-size: 10px; color: var(--dim); letter-spacing: 3px;
+    text-transform: uppercase; margin-bottom: 32px;
+  }
+  p { color: var(--dim); line-height: 1.8; margin-bottom: 20px; font-size: 13px; }
+  p strong { color: var(--text); }
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 32px;
+  }
+  .chip {
+    font-size: 10px; border: 1px solid var(--border2, #243547);
+    color: var(--dim); padding: 3px 9px; letter-spacing: 1px;
+  }
+  .chip.hi { border-color: var(--accent); color: var(--accent); }
+  .cta {
+    display: inline-block; background: var(--accent); color: #000;
+    font-family: 'Space Mono', monospace; font-weight: 700;
+    font-size: 13px; padding: 14px 32px; text-decoration: none;
+    letter-spacing: 0.5px; margin-bottom: 12px;
+    transition: background 0.1s;
+  }
+  .cta:hover { background: #33ddff; }
+  .cta-secondary {
+    display: inline-block; border: 1px solid var(--border);
+    color: var(--dim); font-family: 'Space Mono', monospace;
+    font-size: 11px; padding: 10px 24px; text-decoration: none;
+    margin-left: 12px; transition: all 0.1s;
+  }
+  .cta-secondary:hover { border-color: var(--accent); color: var(--accent); }
+  .footer {
+    margin-top: 40px; font-size: 10px; color: var(--dim);
+    letter-spacing: 1px; display: flex; justify-content: space-between;
+    border-top: 1px solid var(--border); padding-top: 16px;
+    flex-wrap: wrap; gap: 8px;
+  }
+  .footer a { color: var(--dim); text-decoration: none; }
+  .footer a:hover { color: var(--accent); }
+  .badge {
+    display: inline-block; border: 1px solid var(--gold);
+    color: var(--gold); font-size: 9px; padding: 1px 7px;
+    letter-spacing: 1.5px; margin-left: 8px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">OmniVocal<span class="badge">v0.6</span></div>
+  <div class="sub">ConsciousNode SoftWorks · Browser-Native Neural TTS</div>
+
+  <p>
+    <strong>Voice synthesis that runs entirely in your browser.</strong>
+    Single HTML file. Zero dependencies. No server, no API keys, no installation.
+    Open it and speak.
+  </p>
+
+  <p>
+    Record your voice, analyze it, train a custom <strong>.pop2</strong> voice identity,
+    and synthesize any text in your voice — all offline. Embed it anywhere via
+    the <strong>postMessage API</strong>.
+  </p>
+
+  <div class="chips">
+    <span class="chip hi">24kHz neural TTS</span>
+    <span class="chip hi">zero dependencies</span>
+    <span class="chip hi">offline-first</span>
+    <span class="chip">MVC acoustic model</span>
+    <span class="chip">HiFi-GAN vocoder</span>
+    <span class="chip">learned duration MLP</span>
+    <span class="chip">BitLinear ternary weights</span>
+    <span class="chip">7 languages</span>
+    <span class="chip">.pop2 voice identity</span>
+    <span class="chip">postMessage API</span>
+  </div>
+
+  <div>
+    <a class="cta" href="omnivocal.html">▶ OPEN OMNIVOCAL</a>
+    <a class="cta-secondary" href="https://github.com/ConsciousNode/OmniVocal" target="_blank">GitHub →</a>
+  </div>
+
+  <div class="footer">
+    <span>
+      Built by <a href="https://consciousnode.github.io">ConsciousNode SoftWorks</a>
+      · Kham · Ed Interim · Vael Interim
+    </span>
+    <span>xinu philosophy · MIT license</span>
+  </div>
+</div>
+</body>
+</html>
