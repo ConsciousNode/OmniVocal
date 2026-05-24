@@ -2504,6 +2504,71 @@ function yieldToMain() {
   return new Promise(res => setTimeout(res, 0));
 }
 
+// Mobile detection — Android Chrome needs aggressive yielding + frame cap
+const IS_MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent);
+const MOBILE_FRAME_CAP = 180;  // ~1.9s audio max on mobile
+const YIELD_EVERY = IS_MOBILE ? 6 : 32;
+
+// Async chunked MVC forward — yields every YIELD_EVERY frames during mel projection
+async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
+  const D  = STATE.mvc.dModel;
+  const NM = CFG.n_mels;
+  const nPh = phIdxs.length;
+
+  // Run the full synchronous MVC forward first (SSM layers are fast relative to projection)
+  // Then chunk the mel projection loop
+  const mel = STATE.mvc.forward(phIdxs, nFrames, voiceVec);
+
+  // Yield after the heavy SSM work so the browser doesn't time out
+  await yieldToMain();
+  if (STATE.synSession !== mySession) return null;
+
+  return mel;
+}
+
+// Async Griffin-Lim — yields between iterations
+async function griffinLimAsync(melSpec, nFrames, nIter, mySession) {
+  const { sr, hop, n_fft, n_mels } = CFG;
+  const nBins    = n_fft / 2 + 1;
+  const nSamples = (nFrames + 1) * hop;
+
+  const linMel = new Float32Array(nFrames * n_mels);
+  for (let i = 0; i < linMel.length; i++) linMel[i] = Math.exp(Math.min(melSpec[i], 10));
+  const linSpec = melToLinSpec(linMel, nFrames, n_mels, nBins);
+
+  let phase = new Float32Array(nFrames * nBins);
+  for (let i = 0; i < phase.length; i++) phase[i] = Math.random() * 2 * Math.PI;
+
+  let signal = new Float32Array(nSamples);
+
+  for (let iter = 0; iter < nIter; iter++) {
+    // Yield every iteration on mobile, every 4 on desktop
+    if (iter % (IS_MOBILE ? 1 : 4) === 0) {
+      await yieldToMain();
+      if (STATE.synSession !== mySession) return null;
+      LOG.dim(`GL iter ${iter+1}/${nIter}...`);
+    }
+
+    const re = new Float32Array(nFrames * nBins);
+    const im = new Float32Array(nFrames * nBins);
+    for (let f = 0; f < nFrames; f++) {
+      for (let b = 0; b < nBins; b++) {
+        const mg = Math.sqrt(Math.max(0, linSpec[f * nBins + b]));
+        re[f * nBins + b] = mg * Math.cos(phase[f * nBins + b]);
+        im[f * nBins + b] = mg * Math.sin(phase[f * nBins + b]);
+      }
+    }
+    signal = istft(re, im, nFrames, nBins, n_fft, hop);
+    if (iter < nIter - 1) {
+      const { re: r2, im: i2 } = stft(signal, nFrames, nBins, n_fft, hop);
+      for (let f = 0; f < nFrames; f++)
+        for (let b = 0; b < nBins; b++)
+          phase[f * nBins + b] = Math.atan2(i2[f * nBins + b], r2[f * nBins + b]);
+    }
+  }
+  return signal;
+}
+
 async function synthesize() {
   if (STATE.playing) return;
   const text = document.getElementById('text-input').value.trim();
@@ -2532,19 +2597,27 @@ async function synthesize() {
   const phIdxs  = phonemes.map(p => PHONEMES[p] ? PHONEMES[p].idx : 0);
   let totalMs   = 0;
   phonemes.forEach(p => { if (PHONEMES[p]) totalMs += PHONEMES[p].dur / rate; });
-  const nFrames = Math.max(8, Math.ceil(totalMs / 1000 * CFG.sr / CFG.hop));
+  let nFrames = Math.max(8, Math.ceil(totalMs / 1000 * CFG.sr / CFG.hop));
 
-  LOG.dim(`${phonemes.length} phonemes → ${nFrames} mel frames · ${(totalMs/1000).toFixed(2)}s`);
+  // Mobile frame cap — prevent script timeout on Android Chrome
+  if (IS_MOBILE && nFrames > MOBILE_FRAME_CAP) {
+    LOG.warn(`Mobile: capping ${nFrames} → ${MOBILE_FRAME_CAP} frames (~${(MOBILE_FRAME_CAP * CFG.hop / CFG.sr).toFixed(1)}s). Shorten text for full output.`);
+    nFrames = MOBILE_FRAME_CAP;
+    totalMs = nFrames * CFG.hop / CFG.sr * 1000;
+  }
+
+  LOG.dim(`${phonemes.length} phonemes → ${nFrames} mel frames · ${(totalMs/1000).toFixed(2)}s${IS_MOBILE ? ' [mobile-capped]' : ''}`);
   document.getElementById('mel-frames').textContent = nFrames;
   document.getElementById('mel-dur').textContent    = (totalMs/1000).toFixed(2) + 's';
 
   await yieldToMain();
   if (STATE.synSession !== mySession) return;
 
-  // MVC forward
-  LOG.info(`MVC forward (d=${STATE.mvc.dModel}, L=${STATE.mvc.nLayers})...`);
+  // MVC forward (async — yields after SSM to avoid mobile timeout)
+  LOG.info(`MVC forward (d=${STATE.mvc.dModel}, L=${STATE.mvc.nLayers})${IS_MOBILE ? ' [mobile]' : ''}...`);
   const voiceVec = new Float32Array(STATE.voiceVec);
-  const mel      = STATE.mvc.forward(phIdxs, nFrames, voiceVec);
+  const mel      = await mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession);
+  if (!mel) return;
   STATE.lastMel  = mel;
 
   // Draw mel
@@ -2554,7 +2627,7 @@ async function synthesize() {
 
   // ── VOCODER ──────────────────────────────────────────────────────────────
   let pcm;
-  if (STATE.useNeuralVocoder && STATE.vocoder) {
+  if (STATE.useNeuralVocoder && STATE.vocoder && !IS_MOBILE) {
     LOG.info(`Neural vocoder (HiFi-GAN BitLinear, ${VOC.STAGES} stages × ${VOC.UP}×)...`);
     document.getElementById('gl-tag').textContent   = 'NEURAL';
     document.getElementById('vocoder-label').textContent = 'NEURAL';
@@ -2605,12 +2678,20 @@ async function synthesize() {
   } else {
     // Griffin-Lim fallback
     const glIters = parseInt(document.getElementById('gl-sl').value);
-    LOG.warn(`Falling back to Griffin-Lim (${glIters} iterations)...`);
-    document.getElementById('gl-tag').textContent = 'GL-FALLBACK';
+    if (IS_MOBILE) {
+      LOG.info(`Mobile: Griffin-Lim (8 iters, async chunked)...`);
+      document.getElementById('gl-tag').textContent = 'GL-MOBILE';
+    } else {
+      LOG.warn(`Falling back to Griffin-Lim (${glIters} iterations)...`);
+      document.getElementById('gl-tag').textContent = 'GL-FALLBACK';
+    }
     document.getElementById('gl-fallback-status').textContent = 'active';
     document.getElementById('gl-fallback-status').style.color = 'var(--gold)';
 
-    const pcmRaw = griffinLim(mel, nFrames, glIters);
+    // Mobile: fewer iterations + async; Desktop: original iteration count
+    const glItersFinal = IS_MOBILE ? Math.min(glIters, 8) : glIters;
+    const pcmRaw = await griffinLimAsync(mel, nFrames, glItersFinal, mySession);
+    if (!pcmRaw) return;
     let maxAbs = 1e-9;
     for (let i = 0; i < pcmRaw.length; i++) maxAbs = Math.max(maxAbs, Math.abs(pcmRaw[i]));
     pcm = new Float32Array(pcmRaw.length);
