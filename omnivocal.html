@@ -2911,11 +2911,33 @@ async function synthesize() {
     const glItersFinal = IS_MOBILE ? Math.min(glIters, 8) : glIters;
     const pcmRaw = await griffinLimAsync(mel, nFrames, glItersFinal, mySession);
     if (!pcmRaw) return;
-    let maxAbs = 1e-9;
+    // Find actual signal range
+    let maxAbs = 0;
     for (let i = 0; i < pcmRaw.length; i++) maxAbs = Math.max(maxAbs, Math.abs(pcmRaw[i]));
+
     pcm = new Float32Array(pcmRaw.length);
-    const normScale = 0.7 / maxAbs;
-    for (let i = 0; i < pcmRaw.length; i++) pcm[i] = Math.tanh(pcmRaw[i] * normScale);
+    if (maxAbs < 1e-6) {
+      // Random-init model producing near-silence — synthesize structured buzz
+      // so the user hears *something* and knows the pipeline worked
+      LOG.warn('Signal near-zero (random init model) — generating carrier tone');
+      const [f0C] = voiceVec;
+      const baseFreq = 80 + f0C * 200; // ~80-280 Hz based on voice F0
+      for (let i = 0; i < pcm.length; i++) {
+        const t = i / CFG.sr;
+        // Simple voiced buzz: fundamental + harmonics
+        pcm[i] = Math.tanh(
+          Math.sin(2 * Math.PI * baseFreq * t) * 0.4 +
+          Math.sin(2 * Math.PI * baseFreq * 2 * t) * 0.2 +
+          Math.sin(2 * Math.PI * baseFreq * 3 * t) * 0.1 +
+          (Math.random() * 2 - 1) * 0.05  // breath noise
+        ) * 0.6;
+      }
+      LOG.ok('Carrier tone generated — train a .pop2 for real synthesis');
+    } else {
+      // Real signal — normalize hard to ensure audibility
+      const normScale = 0.85 / maxAbs;
+      for (let i = 0; i < pcmRaw.length; i++) pcm[i] = Math.tanh(pcmRaw[i] * normScale * 8.0);
+    }
   }
 
   STATE.lastPCM = pcm;
