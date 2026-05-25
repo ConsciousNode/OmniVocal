@@ -638,6 +638,86 @@
   }
 
   .hidden { display: none !important; }
+
+  /* ── RESPONSIVE MOBILE ── */
+  @media (max-width: 767px) {
+    header {
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 10px 12px;
+    }
+    .status-strip { font-size: 9px; gap: 8px; }
+    .brand-name { font-size: 16px; }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      height: auto;
+      min-height: calc(100vh - 53px);
+    }
+
+    /* Input panel full width, compact */
+    .input-panel {
+      border-right: 1px solid var(--border);
+      padding: 10px 12px;
+      gap: 8px;
+    }
+
+    textarea#text-input {
+      height: 60px;
+      font-size: 13px;
+    }
+
+    .controls-row {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    button { padding: 8px 10px; font-size: 10px; }
+    button.primary { padding: 9px 14px; }
+
+    select { font-size: 10px; padding: 7px 6px; }
+
+    /* Phoneme strip compact */
+    .phoneme-panel { padding: 8px 12px; min-height: 44px; }
+    .ph-chip { font-size: 10px; padding: 1px 4px; }
+
+    /* Mel canvas: fixed height on mobile */
+    .synthesis-panel { min-height: 180px; }
+    #mel-canvas { height: 140px; }
+    #wave-canvas { height: 44px; }
+    .mel-header { padding: 6px 10px; flex-wrap: wrap; gap: 4px; }
+    .mel-stats { font-size: 9px; gap: 8px; }
+
+    /* Right panel becomes bottom panel — tabs only, log hidden by default */
+    .right-panel {
+      border-left: none;
+      border-top: 1px solid var(--border);
+      max-height: 340px;
+      overflow-y: auto;
+    }
+
+    /* Tab labels larger touch targets */
+    .tab-btn {
+      padding: 10px 14px !important;
+      font-size: 10px !important;
+    }
+
+    .rp-section { padding: 10px 12px; }
+    .axis-row { gap: 6px; }
+    .axis-label { width: 70px; font-size: 9px; }
+    .axis-val { font-size: 9px; width: 28px; }
+
+    #voice-desc { font-size: 10px; }
+
+    /* Footer compact */
+    .footer-strip {
+      flex-direction: column;
+      gap: 2px;
+      font-size: 8px;
+      padding: 6px 12px;
+    }
+  }
 </style>
 </head>
 <body>
@@ -2505,7 +2585,7 @@ function yieldToMain() {
 }
 
 // Mobile detection — Android Chrome needs aggressive yielding + frame cap
-const IS_MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent);
+const IS_MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 768;
 const MOBILE_FRAME_CAP = 180;  // ~1.9s audio max on mobile
 const YIELD_EVERY = IS_MOBILE ? 6 : 32;
 
