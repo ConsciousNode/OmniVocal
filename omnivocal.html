@@ -2924,6 +2924,15 @@ async function synthesize() {
   await yieldToMain();
   if (STATE.synSession !== mySession) return;
 
+  // Ensure AudioContext is running before playback (mobile may have suspended it)
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+      LOG.dim('AudioContext resumed before playback');
+    }
+  } catch(e) {}
+
   // Playback
   LOG.ok(`Synthesis complete: ${pcm.length} samples @ ${CFG.sr}Hz`);
   setSys('PLAYING', 'live');
@@ -3233,7 +3242,21 @@ function init() {
   LOG.ok('G2P loaded: English + Japanese + Korean + Spanish + German + French + Russian');
   LOG.ok('ConsciousNode names registered: omnivocal, kham, kehai, vael, pixie + 12 more');
 
-  document.getElementById('btn-synth').addEventListener('click', synthesize);
+  document.getElementById('btn-synth').addEventListener('click', async () => {
+    // Pre-unlock AudioContext on mobile — Chrome requires gesture proximity
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
+      // Play a silent buffer to fully unlock
+      const silBuf = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const silSrc = ctx.createBufferSource();
+      silSrc.buffer = silBuf;
+      silSrc.connect(ctx.destination);
+      silSrc.start();
+      LOG.dim('AudioContext unlocked');
+    } catch(e) { LOG.warn('AudioContext pre-unlock failed: ' + e.message); }
+    synthesize();
+  });
   document.getElementById('btn-stop').addEventListener('click', stopSynthesis);
   document.getElementById('btn-export').addEventListener('click', exportWAV);
 
