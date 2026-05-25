@@ -2942,6 +2942,11 @@ async function synthesize() {
 
   STATE.lastPCM = pcm;
   drawWaveCanvas(pcm);
+  // Auto-prepare WAV download link on mobile immediately after synthesis
+  // so it's ready before AudioContext playback attempt
+  if (IS_MOBILE) {
+    try { exportWAV(); } catch(e) {}
+  }
 
   await yieldToMain();
   if (STATE.synSession !== mySession) return;
@@ -2992,11 +2997,37 @@ function exportWAV() {
   if (!STATE.lastPCM) { LOG.warn('Nothing to export — synthesize first'); return; }
   const blob = encodeWAV(STATE.lastPCM, CFG.sr);
   const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = `omnivocal_${Date.now()}.wav`;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-  LOG.ok('WAV exported');
+  const fname = `omnivocal_${Date.now()}.wav`;
+
+  if (IS_MOBILE) {
+    // Android blocks programmatic a.click() downloads — show a tappable link instead
+    const existing = document.getElementById('wav-dl-link');
+    if (existing) existing.remove();
+    const a = document.createElement('a');
+    a.id = 'wav-dl-link';
+    a.href = url;
+    a.download = fname;
+    a.textContent = '⬇ TAP TO SAVE WAV';
+    a.style.cssText = `
+      display:block; margin:8px 0 0; padding:10px 16px;
+      background:var(--green); color:#000;
+      font-family:'Space Mono',monospace; font-size:12px; font-weight:700;
+      text-decoration:none; letter-spacing:1px; text-align:center;
+    `;
+    // Insert below the export button
+    const btn = document.getElementById('btn-export');
+    btn.parentNode.insertBefore(a, btn.nextSibling);
+    LOG.ok('WAV ready — tap the green button to save');
+    // Also try programmatic click as a backup (works on some Android versions)
+    try { a.click(); } catch(e) {}
+  } else {
+    // Desktop: programmatic click works fine
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    LOG.ok('WAV exported');
+  }
 }
 
 // ── VOICE SPACE UI ────────────────────────────────────────────────────────
