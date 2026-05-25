@@ -3910,17 +3910,31 @@ async function trainConditioning() {
   const targetVoiceVec = new Float32Array(STATE.voiceVec);
   const trainPhonemes  = Array.from({length: Math.min(nFrames, 16)}, (_, i) => (i * 7 + 3) % 50);
 
-  LOG.info(`Training: ${EPOCHS} epochs · ${adalnLayers.length} adaln layers · ${snakeAlphas.length} alpha vecs`);
+  // Reduce epochs on mobile — each epoch has a full MVC forward
+  const ACTUAL_EPOCHS = IS_MOBILE ? 20 : EPOCHS;
+  LOG.info(`Training: ${ACTUAL_EPOCHS} epochs · ${adalnLayers.length} adaln layers · ${snakeAlphas.length} alpha vecs${IS_MOBILE ? ' [mobile-reduced]' : ''}`);
   document.getElementById('train-progress-wrap').style.display = 'flex';
   document.getElementById('train-status').textContent = 'starting...';
 
   let lastLoss = 0;
 
-  for (let epoch = 0; epoch < EPOCHS; epoch++) {
-    const lr = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + Math.cos(Math.PI * epoch / EPOCHS));
+  for (let epoch = 0; epoch < ACTUAL_EPOCHS; epoch++) {
+    const lr = LR_MIN + 0.5 * (LR - LR_MIN) * (1 + Math.cos(Math.PI * epoch / ACTUAL_EPOCHS));
 
-    // Forward: synthesize mel with current voice vec
-    const predMel = STATE.mvc.forward(trainPhonemes, nFrames, targetVoiceVec);
+    // Yield every epoch on mobile so UI stays alive
+    if (IS_MOBILE) {
+      await yieldToMain();
+      const pct = Math.round(epoch / ACTUAL_EPOCHS * 100);
+      document.getElementById('train-fill').style.width = pct + '%';
+      document.getElementById('train-epoch-label').textContent = `epoch ${epoch+1} / ${ACTUAL_EPOCHS}`;
+      document.getElementById('train-status').textContent = `epoch ${epoch+1} · loss: ${lastLoss.toFixed(5)}`;
+    }
+
+    // Forward: use async chunked path on mobile
+    const predMel = IS_MOBILE
+      ? await mvcForwardAsync(trainPhonemes, nFrames, targetVoiceVec, -1)
+      : STATE.mvc.forward(trainPhonemes, nFrames, targetVoiceVec);
+    if (!predMel) break; // shouldn't happen (session -1 never cancels)
 
     // Mel MSE loss against recording-derived target
     let loss = 0;
@@ -3973,10 +3987,10 @@ async function trainConditioning() {
       }
     });
 
-    if (epoch % 6 === 0 || epoch === EPOCHS - 1) {
-      const pct = Math.round((epoch + 1) / EPOCHS * 100);
+    if (epoch % 6 === 0 || epoch === ACTUAL_EPOCHS - 1) {
+      const pct = Math.round((epoch + 1) / ACTUAL_EPOCHS * 100);
       document.getElementById('train-fill').style.width = pct + '%';
-      document.getElementById('train-epoch-label').textContent = `epoch ${epoch+1} / ${EPOCHS}`;
+      document.getElementById('train-epoch-label').textContent = `epoch ${epoch+1} / ${ACTUAL_EPOCHS}`;
       document.getElementById('train-status').textContent = `mel MSE: ${loss.toFixed(5)} · lr: ${lr.toFixed(5)}`;
       await new Promise(r => setTimeout(r, 0));
     }
@@ -3984,18 +3998,18 @@ async function trainConditioning() {
 
   STATE.pop2TrainingMeta = {
     loss_final:     lastLoss,
-    epochs:         EPOCHS,
+    epochs:         ACTUAL_EPOCHS,
     trained_at:     new Date().toISOString(),
     brymar_version: null,
   };
 
   document.getElementById('train-fill').style.width = '100%';
   document.getElementById('train-fill').className = 'pop-meter-fill green';
-  document.getElementById('train-status').textContent = `complete — mel MSE: ${lastLoss.toFixed(5)}`;
+  document.getElementById('train-status').textContent = `complete — mel MSE: ${lastLoss.toFixed(5)} (${ACTUAL_EPOCHS} epochs)`;
   document.getElementById('btn-export-pop2').disabled = false;
   setPopExportStatus('ready to export', 'ok');
   REC.training = false;
-  LOG.ok(`Conditioning training complete — ${EPOCHS} epochs, mel MSE: ${lastLoss.toFixed(5)}`);
+  LOG.ok(`Conditioning training complete — ${ACTUAL_EPOCHS} epochs, mel MSE: ${lastLoss.toFixed(5)}`);
   LOG.dim('Export .pop2 to save this voice identity');
 }
 
