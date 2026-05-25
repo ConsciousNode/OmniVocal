@@ -2589,20 +2589,159 @@ const IS_MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent) || window.inn
 const MOBILE_FRAME_CAP = 180;  // ~1.9s audio max on mobile
 const YIELD_EVERY = IS_MOBILE ? 6 : 32;
 
-// Async chunked MVC forward — yields every YIELD_EVERY frames during mel projection
+// Async chunked MVC forward — yields every YIELD_EVERY frames to keep mobile alive
 async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
-  const D  = STATE.mvc.dModel;
-  const NM = CFG.n_mels;
+  if (!IS_MOBILE) {
+    // Desktop: run synchronously, single yield after
+    const mel = STATE.mvc.forward(phIdxs, nFrames, voiceVec);
+    await yieldToMain();
+    return mel;
+  }
+
+  // Mobile: chunked async forward — we re-implement the hot path here
+  // so we can yield between frame chunks without blocking Chrome
+  const mvc = STATE.mvc;
+  const D   = mvc.dModel;
+  const NM  = CFG.n_mels;
   const nPh = phIdxs.length;
 
-  // Run the full synchronous MVC forward first (SSM layers are fast relative to projection)
-  // Then chunk the mel projection loop
-  const mel = STATE.mvc.forward(phIdxs, nFrames, voiceVec);
+  // ── Step 1: Build sinusoidal phoneme embeddings (fast, no yield needed)
+  let seq = new Float32Array(nPh * D);
+  for (let i = 0; i < nPh; i++) {
+    const pid = phIdxs[i];
+    for (let d = 0; d < D; d++) {
+      seq[i*D+d] = (d % 2 === 0)
+        ? Math.sin(pid * 0.3 * (d/2 + 1) * 0.07) * 0.2
+        : Math.cos(pid * 0.3 * (Math.floor(d/2) + 1) * 0.07) * 0.2;
+    }
+  }
 
-  // Yield after the heavy SSM work so the browser doesn't time out
+  // ── Step 2: SSM layers — yield between layers
+  for (let layer = 0; layer < mvc.nLayers; layer++) {
+    LOG.dim(`MVC layer ${layer+1}/${mvc.nLayers}...`);
+    await yieldToMain();
+    if (STATE.synSession !== mySession) return null;
+
+    const shift = mvc.adaln_shift[layer].forward(voiceVec);
+    const scale = mvc.adaln_scale[layer].forward(voiceVec);
+
+    // Forward pass — chunked: yield every YIELD_EVERY phonemes
+    const fwd = new Float32Array(nPh * D);
+    let hF = new Float32Array(D);
+    for (let t = 0; t < nPh; t++) {
+      if (t > 0 && t % YIELD_EVERY === 0) {
+        await yieldToMain();
+        if (STATE.synSession !== mySession) return null;
+      }
+      const xin  = seq.subarray(t*D, (t+1)*D);
+      const gate = mvc.Wup[layer].forward(xin);
+      const xg   = gate.subarray(0, D);
+      const sg   = gate.subarray(D);
+      const dB   = mvc.B[layer].forward(xg);
+      const Av   = mvc.A_log[layer].forward(xg);
+      for (let i = 0; i < D; i++) {
+        const dA = Math.exp(-Math.exp(Math.max(-8, Math.min(0, Av[i]))));
+        hF[i] = dA * hF[i] + dB[i];
+      }
+      const y = mvc.C[layer].forward(hF);
+      for (let i = 0; i < D; i++) {
+        const sig = 1 / (1 + Math.exp(-sg[i]));
+        fwd[t*D+i] = (y[i] * (1 + scale[i]*0.1) + shift[i]*0.05) * sig;
+      }
+    }
+
+    await yieldToMain();
+    if (STATE.synSession !== mySession) return null;
+
+    // Backward pass — chunked
+    const bwd = new Float32Array(nPh * D);
+    let hB = new Float32Array(D);
+    for (let t = nPh - 1; t >= 0; t--) {
+      if ((nPh - 1 - t) % YIELD_EVERY === 0 && t < nPh - 1) {
+        await yieldToMain();
+        if (STATE.synSession !== mySession) return null;
+      }
+      const xin  = seq.subarray(t*D, (t+1)*D);
+      const gate = mvc.Wup[layer].forward(xin);
+      const xg   = gate.subarray(0, D);
+      const sg   = gate.subarray(D);
+      const dB   = mvc.B[layer].forward(xg);
+      const Av   = mvc.A_log[layer].forward(xg);
+      for (let i = 0; i < D; i++) {
+        const dA = Math.exp(-Math.exp(Math.max(-8, Math.min(0, Av[i]))));
+        hB[i] = dA * hB[i] + dB[i];
+      }
+      const y = mvc.C[layer].forward(hB);
+      for (let i = 0; i < D; i++) {
+        const sig = 1 / (1 + Math.exp(-sg[i]));
+        bwd[t*D+i] = (y[i] * (1 + scale[i]*0.1) + shift[i]*0.05) * sig;
+      }
+    }
+
+    // Merge + residual
+    const next = new Float32Array(nPh * D);
+    for (let i = 0; i < nPh * D; i++) next[i] = seq[i] + (fwd[i] + bwd[i]) * 0.5;
+    seq = next;
+
+    await yieldToMain();
+    if (STATE.synSession !== mySession) return null;
+  }
+
+  LOG.dim('MVC expansion + mel projection...');
   await yieldToMain();
   if (STATE.synSession !== mySession) return null;
 
+  // ── Step 3: Duration expansion (use synchronous path from mvc.forward internals)
+  // For mobile we use simple linear expansion — fast, good enough
+  const expanded = new Float32Array(nFrames * D);
+  for (let f = 0; f < nFrames; f++) {
+    const progress = f / Math.max(nFrames - 1, 1);
+    const phF = progress * (nPh - 1);
+    const phLo = Math.floor(phF), phHi = Math.min(nPh - 1, phLo + 1);
+    const alpha = phF - phLo;
+    for (let d = 0; d < D; d++)
+      expanded[f*D+d] = seq[phLo*D+d] * (1 - alpha) + seq[phHi*D+d] * alpha;
+    if (f % (YIELD_EVERY * 4) === 0 && f > 0) {
+      await yieldToMain();
+      if (STATE.synSession !== mySession) return null;
+    }
+  }
+
+  await yieldToMain();
+  if (STATE.synSession !== mySession) return null;
+
+  // ── Step 4: Mel projection — chunked
+  const [f0C, f0R, breath, fShift, fAg, tilt, mora, weight, reg, ageT] = voiceVec;
+  const mel = new Float32Array(nFrames * NM);
+  for (let f = 0; f < nFrames; f++) {
+    if (f % YIELD_EVERY === 0 && f > 0) {
+      await yieldToMain();
+      if (STATE.synSession !== mySession) return null;
+    }
+    const frame = mvc.W_out.forward(expanded.subarray(f*D, (f+1)*D));
+    for (let m = 0; m < NM; m++) {
+      const mN = m / NM;
+      const f0Shape     = Math.exp(-0.5 * ((mN - (f0C*0.6+0.1)) / 0.15)**2) * f0R * 0.35;
+      const breathShape = breath * 0.22 * (1 - mN * 0.6);
+      const f1 = 0.15 + fShift*0.30, f2 = 0.35 + fShift*0.20, f3 = 0.55 + fShift*0.10;
+      const formantShape = (
+        Math.exp(-0.5*((mN-f1)/0.09)**2) +
+        Math.exp(-0.5*((mN-f2)/0.07)**2)*0.7 +
+        Math.exp(-0.5*((mN-f3)/0.06)**2)*0.4
+      ) * fAg * 0.28;
+      const tiltShape   = (tilt - 0.5) * 0.32 * (mN - 0.5);
+      const weightShape = weight * 0.22 * Math.exp(-0.5*((mN-0.35)/0.18)**2);
+      const ageShape    = ageT * 0.08 * (mN*mN) * Math.sin(f*0.3+m*0.7) * 0.3;
+      const progress    = f / Math.max(nFrames-1, 1);
+      const prosody     = 1 + 0.15 * Math.sin(Math.PI*progress) * f0R;
+      mel[f*NM+m] = Math.tanh(
+        (frame[m]*0.3 + f0Shape + breathShape + formantShape + tiltShape + weightShape + ageShape)
+        * prosody
+      );
+    }
+  }
+
+  LOG.ok(`MVC forward complete (${nFrames} frames, chunked async)`);
   return mel;
 }
 
