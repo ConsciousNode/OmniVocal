@@ -2911,32 +2911,46 @@ async function synthesize() {
     const glItersFinal = IS_MOBILE ? Math.min(glIters, 8) : glIters;
     const pcmRaw = await griffinLimAsync(mel, nFrames, glItersFinal, mySession);
     if (!pcmRaw) return;
+
     // Find actual signal range
     let maxAbs = 0;
     for (let i = 0; i < pcmRaw.length; i++) maxAbs = Math.max(maxAbs, Math.abs(pcmRaw[i]));
 
     pcm = new Float32Array(pcmRaw.length);
-    if (maxAbs < 1e-6) {
-      // Random-init model producing near-silence — synthesize structured buzz
-      // so the user hears *something* and knows the pipeline worked
-      LOG.warn('Signal near-zero (random init model) — generating carrier tone');
+
+    // On mobile with no .pop2 loaded, random-init MVC produces signal too weak
+    // to survive normalization. Generate carrier tone unconditionally on mobile
+    // unless signal is strong (i.e. a .pop2 has been trained/loaded).
+    const pop2Loaded = document.getElementById('pop2-status')?.textContent !== 'not loaded';
+    const signalStrong = maxAbs > 0.01; // threshold for "real" trained signal
+
+    if (IS_MOBILE && !signalStrong && !pop2Loaded) {
+      // Carrier tone — voiced buzz so user hears the pipeline is alive
+      LOG.warn('Random init signal too weak — generating carrier tone (load a .pop2 for real synthesis)');
       const [f0C] = voiceVec;
-      const baseFreq = 80 + f0C * 200; // ~80-280 Hz based on voice F0
+      const baseFreq = 80 + f0C * 200;
+      const nSamples = Math.max(pcmRaw.length, Math.floor(CFG.sr * 1.5));
+      pcm = new Float32Array(nSamples);
       for (let i = 0; i < pcm.length; i++) {
         const t = i / CFG.sr;
-        // Simple voiced buzz: fundamental + harmonics
         pcm[i] = Math.tanh(
-          Math.sin(2 * Math.PI * baseFreq * t) * 0.4 +
-          Math.sin(2 * Math.PI * baseFreq * 2 * t) * 0.2 +
-          Math.sin(2 * Math.PI * baseFreq * 3 * t) * 0.1 +
-          (Math.random() * 2 - 1) * 0.05  // breath noise
-        ) * 0.6;
+          Math.sin(2 * Math.PI * baseFreq * t) * 0.45 +
+          Math.sin(2 * Math.PI * baseFreq * 2 * t) * 0.25 +
+          Math.sin(2 * Math.PI * baseFreq * 3 * t) * 0.12 +
+          Math.sin(2 * Math.PI * baseFreq * 4 * t) * 0.06 +
+          (Math.random() * 2 - 1) * 0.04
+        ) * 0.7;
       }
-      LOG.ok('Carrier tone generated — train a .pop2 for real synthesis');
+      LOG.ok(`Carrier tone: ${baseFreq.toFixed(0)}Hz · ${(pcm.length/CFG.sr).toFixed(2)}s`);
     } else {
-      // Real signal — normalize hard to ensure audibility
+      // Real signal or .pop2 loaded — normalize to audible level
+      if (maxAbs < 1e-9) maxAbs = 1e-9;
       const normScale = 0.85 / maxAbs;
-      for (let i = 0; i < pcmRaw.length; i++) pcm[i] = Math.tanh(pcmRaw[i] * normScale * 8.0);
+      // Boost: trained signal needs less boost than random noise
+      const boost = signalStrong ? 1.5 : 12.0;
+      for (let i = 0; i < pcmRaw.length; i++) {
+        pcm[i] = Math.tanh(pcmRaw[i] * normScale * boost);
+      }
     }
   }
 
