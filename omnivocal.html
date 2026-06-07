@@ -848,6 +848,13 @@
           <div class="pop-section-title">Analyze + Train</div>
           <div class="pop-status" id="analyze-status">waiting for recording...</div>
           <button id="btn-analyze" disabled style="margin-top:6px;">⚙ ANALYZE VOICE</button>
+
+          <div style="margin-top:12px;">
+            <div class="pop-section-title">Spoken text (for training)</div>
+            <input type="text" id="spoken-text" disabled placeholder="Type exactly what you said in the recording" style="width:100%; background:var(--bg2); border:1px solid var(--border); font-family:monospace; font-size:12px; padding:6px 8px;">
+            <div style="font-size:10px; color:var(--dim); margin-top:4px;">Required for meaningful duration training.</div>
+          </div>
+
           <div style="font-size:10px;color:var(--dim);line-height:1.6;margin-top:8px;padding:7px 8px;border:1px solid var(--border);background:var(--bg);">
             Training adapts <strong style="color:var(--text);">voice timbre and speaking tempo</strong> to your recording.
             The duration model learns your natural phoneme timing — exported in the .pop2 file.
@@ -1055,8 +1062,6 @@ function istft(re, im, nFrames, nBins, nFFT, hop) {
       for (let k = 0; k < nBins; k++) {
         const a = 2 * Math.PI * k * n / nFFT;
         s += re[f * nBins + k] * Math.cos(a) - im[f * nBins + k] * Math.sin(a);
-        if (k > 0 && k < nBins - 1)
-          s += re[f * nBins + k] * Math.cos(a) + im[f * nBins + k] * Math.sin(a);
       }
       fr[n] = s / nFFT;
     }
@@ -1107,6 +1112,7 @@ function pcmToMel(pcm) {
 
 // ── MEL → LINEAR SPECTROGRAM ──────────────────────────────────────────────
 function melToLinSpec(linMel, nF, nM, nB) {
+  if (!MEL_FILTERS) buildMelFilters();
   const cs = new Float32Array(nB);
   for (let m = 0; m < nM; m++)
     for (let b = 0; b < nB; b++) cs[b] += MEL_FILTERS[m * nB + b];
@@ -1115,7 +1121,7 @@ function melToLinSpec(linMel, nF, nM, nB) {
     for (let b = 0; b < nB; b++) {
       let s = 0;
       for (let m = 0; m < nM; m++) s += MEL_FILTERS[m * nB + b] * linMel[f * nM + m];
-      ls[f * nB + b] = cs[b] > 0 ? s / (cs[b] + 1e-9) : 0;
+      ls[f * nB + b] = Math.max(0, cs[b] > 0 ? s / (cs[b] + 1e-9) : 0);
     }
   return ls;
 }
@@ -1840,13 +1846,13 @@ class MVCModel {
       // Build table prior in frames for blending
       const tablePrior = new Float32Array(nPh);
       for (let i = 0; i < nPh; i++) {
-        const phKey = Object.keys(PHONEMES).find(k => PHONEMES[k].idx === phIdxs[i]);
+        const phKey = Object.keys(PHONEMES).find(k => PHONEMES[k].idx === phonemeIdxs[i]);
         const durMs = phKey ? PHONEMES[phKey].dur : 80;
         tablePrior[i] = durMs / 1000 * CFG.sr / CFG.hop;
       }
       // Rate multiplier pulled from voice mora_timing for expressiveness
       const rateMul = 0.7 + voiceVec[6] * 0.6; // mora_timing → 0.7x–1.3x
-      frameCounts = STATE.durModel.predictSequence(phIdxs, voiceVec, rateMul, tablePrior);
+      frameCounts = STATE.durModel.predictSequence(phonemeIdxs, voiceVec, rateMul, tablePrior);
     } else {
       // Uniform fallback
       frameCounts = new Int32Array(nPh).fill(Math.max(1, Math.round(nFrames / Math.max(nPh, 1))));
@@ -2388,7 +2394,9 @@ const AXES = [
 ];
 
 // ── STATE ─────────────────────────────────────────────────────────────────
+let trainingSession = 0;
 const STATE = {
+  trainSession:      0,
   mvc:               null,   // MVCModel instance
   vocoder:           null,   // NeuralVocoder instance
   durModel:          null,   // DurationModel instance
@@ -2590,7 +2598,7 @@ const MOBILE_FRAME_CAP = 180;  // ~1.9s audio max on mobile
 const YIELD_EVERY = IS_MOBILE ? 6 : 32;
 
 // Async chunked MVC forward — yields every YIELD_EVERY frames to keep mobile alive
-async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
+async function mvcForwardAsync(phIdxs, nFrames, voiceVec, sessionToken, useSynSession = true) {
   if (!IS_MOBILE) {
     // Desktop: run synchronously, single yield after
     const mel = STATE.mvc.forward(phIdxs, nFrames, voiceVec);
@@ -2620,7 +2628,7 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
   for (let layer = 0; layer < mvc.nLayers; layer++) {
     LOG.dim(`MVC layer ${layer+1}/${mvc.nLayers}...`);
     await yieldToMain();
-    if (STATE.synSession !== mySession) return null;
+    if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
 
     const shift = mvc.adaln_shift[layer].forward(voiceVec);
     const scale = mvc.adaln_scale[layer].forward(voiceVec);
@@ -2631,7 +2639,7 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
     for (let t = 0; t < nPh; t++) {
       if (t > 0 && t % YIELD_EVERY === 0) {
         await yieldToMain();
-        if (STATE.synSession !== mySession) return null;
+        if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
       }
       const xin  = seq.subarray(t*D, (t+1)*D);
       const gate = mvc.Wup[layer].forward(xin);
@@ -2651,7 +2659,7 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
     }
 
     await yieldToMain();
-    if (STATE.synSession !== mySession) return null;
+    if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
 
     // Backward pass — chunked
     const bwd = new Float32Array(nPh * D);
@@ -2659,7 +2667,7 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
     for (let t = nPh - 1; t >= 0; t--) {
       if ((nPh - 1 - t) % YIELD_EVERY === 0 && t < nPh - 1) {
         await yieldToMain();
-        if (STATE.synSession !== mySession) return null;
+        if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
       }
       const xin  = seq.subarray(t*D, (t+1)*D);
       const gate = mvc.Wup[layer].forward(xin);
@@ -2684,12 +2692,12 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
     seq = next;
 
     await yieldToMain();
-    if (STATE.synSession !== mySession) return null;
+    if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
   }
 
   LOG.dim('MVC expansion + mel projection...');
   await yieldToMain();
-  if (STATE.synSession !== mySession) return null;
+  if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
 
   // ── Step 3: Duration expansion (use synchronous path from mvc.forward internals)
   // For mobile we use simple linear expansion — fast, good enough
@@ -2703,12 +2711,12 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
       expanded[f*D+d] = seq[phLo*D+d] * (1 - alpha) + seq[phHi*D+d] * alpha;
     if (f % (YIELD_EVERY * 4) === 0 && f > 0) {
       await yieldToMain();
-      if (STATE.synSession !== mySession) return null;
+      if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
     }
   }
 
   await yieldToMain();
-  if (STATE.synSession !== mySession) return null;
+  if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
 
   // ── Step 4: Mel projection — chunked
   const [f0C, f0R, breath, fShift, fAg, tilt, mora, weight, reg, ageT] = voiceVec;
@@ -2716,7 +2724,7 @@ async function mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession) {
   for (let f = 0; f < nFrames; f++) {
     if (f % YIELD_EVERY === 0 && f > 0) {
       await yieldToMain();
-      if (STATE.synSession !== mySession) return null;
+      if (useSynSession ? STATE.synSession !== sessionToken : STATE.trainSession !== sessionToken) return null;
     }
     const frame = mvc.W_out.forward(expanded.subarray(f*D, (f+1)*D));
     for (let m = 0; m < NM; m++) {
@@ -2772,7 +2780,7 @@ async function griffinLimAsync(melSpec, nFrames, nIter, mySession) {
     const im = new Float32Array(nFrames * nBins);
     for (let f = 0; f < nFrames; f++) {
       for (let b = 0; b < nBins; b++) {
-        const mg = Math.sqrt(Math.max(0, linSpec[f * nBins + b]));
+        const mg = Math.max(0, linSpec[f * nBins + b]);
         re[f * nBins + b] = mg * Math.cos(phase[f * nBins + b]);
         im[f * nBins + b] = mg * Math.sin(phase[f * nBins + b]);
       }
@@ -2789,10 +2797,13 @@ async function griffinLimAsync(melSpec, nFrames, nIter, mySession) {
 }
 
 async function synthesize() {
+  if (REC.training) {
+    LOG.warn("Training in progress – wait for completion before synthesizing.");
+    return;
+  }
   if (STATE.playing) return;
   const text = document.getElementById('text-input').value.trim();
   if (!text) return;
-
   STATE.playing = true;
   STATE.synSession++;
   const mySession = STATE.synSession;
@@ -2835,7 +2846,7 @@ async function synthesize() {
   // MVC forward (async — yields after SSM to avoid mobile timeout)
   LOG.info(`MVC forward (d=${STATE.mvc.dModel}, L=${STATE.mvc.nLayers})${IS_MOBILE ? ' [mobile]' : ''}...`);
   const voiceVec = new Float32Array(STATE.voiceVec);
-  const mel      = await mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession);
+  const mel      = await mvcForwardAsync(phIdxs, nFrames, voiceVec, mySession, true);
   if (!mel) return;
   STATE.lastMel  = mel;
 
@@ -2846,7 +2857,7 @@ async function synthesize() {
 
   // ── VOCODER ──────────────────────────────────────────────────────────────
   let pcm;
-  if (STATE.useNeuralVocoder && STATE.vocoder && !IS_MOBILE) {
+  if (STATE.useNeuralVocoder && STATE.vocoder) {
     LOG.info(`Neural vocoder (HiFi-GAN BitLinear, ${VOC.STAGES} stages × ${VOC.UP}×)...`);
     document.getElementById('gl-tag').textContent   = 'NEURAL';
     document.getElementById('vocoder-label').textContent = 'NEURAL';
@@ -2996,7 +3007,18 @@ async function synthesize() {
   omniPost('synthEnd', { duration_s: (pcm.length / CFG.sr).toFixed(2) });
 }
 
+function stopCursorAnimation() {
+  if (CURSOR.raf) {
+    cancelAnimationFrame(CURSOR.raf);
+    CURSOR.raf = null;
+  }
+  const cursor = document.getElementById('wave-cursor');
+  if (cursor) cursor.style.display = 'none';
+  CURSOR.active = false;
+}
+
 function stopSynthesis() {
+  stopCursorAnimation();
   STATE.synSession++;
   STATE.playing = false;
   if (STATE.audioCtx) STATE.audioCtx.suspend();
@@ -3015,8 +3037,8 @@ function exportWAV() {
 
   if (IS_MOBILE) {
     // Android blocks programmatic a.click() downloads — show a tappable link instead
-    const existing = document.getElementById('wav-dl-link');
-    if (existing) existing.remove();
+    const existingLink = document.getElementById('wav-dl-link');
+    if (existingLink) existingLink.remove();
     const a = document.createElement('a');
     a.id = 'wav-dl-link';
     a.href = url;
@@ -3511,6 +3533,17 @@ function deserializeLayers(data, layers) {
   });
 }
 
+function getAllVocoderLayers() {
+  const layers = [];
+  for (const stage of STATE.vocoder.stages) {
+    layers.push(stage.adaln_shift, stage.adaln_scale);
+    for (const rb of stage.resBlocks) {
+      layers.push(rb.W1, rb.W2);
+    }
+  }
+  return layers;
+}
+
 // Get just the AdaLN conditioning layers from the vocoder
 function getVocoderConditioningLayers() {
   const layers = [];
@@ -3544,7 +3577,7 @@ async function exportPop2() {
     description: describeVoice(Array.from(STATE.voiceVec)),
     voice_vector: Array.from(STATE.voiceVec),
     mvc_weights: serializeLayers(mvcLayers),
-    vocoder_conditioning: serializeLayers(vocCondLayers),
+    vocoder_full: serializeLayers(getAllVocoderLayers()),
     duration_model: serializeLayers(STATE.durModel.getLayers()),
     snake_alphas: snakeAlphas.map(a => Array.from(a)),
     base_model_hash: baseHash,
@@ -3594,10 +3627,25 @@ async function loadPop2(file) {
       LOG.ok(`MVC weights loaded (${pop2.mvc_weights.length} layers)`);
     }
 
-    // Load vocoder conditioning
-    if (pop2.vocoder_conditioning) {
-      deserializeLayers(pop2.vocoder_conditioning, getVocoderConditioningLayers());
-      LOG.ok(`Vocoder conditioning loaded (${pop2.vocoder_conditioning.length} layers)`);
+    // Load vocoder conditioning or full vocoder
+    if (pop2.vocoder_full) {
+      if (pop2.training_meta && pop2.training_meta.epochs === 0) {
+        LOG.warn("Legacy .pop2 (0 epochs): skipping resBlock weights to preserve timbre");
+        let idx = 0;
+        for (const stage of STATE.vocoder.stages) {
+          deserializeLayers([pop2.vocoder_full[idx++], pop2.vocoder_full[idx++]], [stage.adaln_shift, stage.adaln_scale]);
+          idx += stage.resBlocks.length * 2;
+        }
+      } else {
+        const allVocLayers = getAllVocoderLayers();
+        deserializeLayers(pop2.vocoder_full, allVocLayers);
+        LOG.ok(`Vocoder full weights loaded (${pop2.vocoder_full.length} layers)`);
+      }
+    } else if (pop2.vocoder_conditioning) {
+      // legacy: load only conditioning layers, keep resBlocks as base init
+      const condLayers = getVocoderConditioningLayers();
+      deserializeLayers(pop2.vocoder_conditioning, condLayers);
+      LOG.warn("Legacy .pop2: resBlock weights not present, using base init");
     }
 
     // Load duration model
@@ -3642,9 +3690,9 @@ function syncVoiceSliders() {
   const sliders = document.querySelectorAll('.axis-slider');
   sliders.forEach((sl, i) => {
     if (i < STATE.voiceVec.length) {
-      sl.value = STATE.voiceVec[i];
-      const val = sl.closest('.param-row')?.querySelector('.param-val');
-      if (val) val.textContent = STATE.voiceVec[i].toFixed(2);
+      sl.value = Math.round(STATE.voiceVec[i] * 100);
+      const valSpan = document.getElementById(`axv-${i}`);
+      if (valSpan) valSpan.textContent = STATE.voiceVec[i].toFixed(2);
     }
   });
 }
@@ -3841,6 +3889,7 @@ function runAnalysis() {
   // Show train button
   document.getElementById('btn-train').style.display = '';
   document.getElementById('btn-train').disabled = false;
+  document.getElementById('spoken-text').disabled = false;
   document.getElementById('train-progress-wrap').style.display = 'flex';
   LOG.dim('Ready to train conditioning layers — click TRAIN CONDITIONING');
 }
@@ -3851,6 +3900,7 @@ function runAnalysis() {
 // Loss: mel MSE between predicted mel and mel computed from actual recording.
 
 function computeRecordingMel(pcm, nFrames) {
+  if (!MEL_FILTERS) buildMelFilters();
   const mels = new Float32Array(nFrames * CFG.n_mels);
   for (let f = 0; f < nFrames; f++) {
     const start = f * CFG.hop;
@@ -3872,10 +3922,27 @@ function computeRecordingMel(pcm, nFrames) {
 }
 
 async function trainConditioning() {
+  if (STATE.playing) {
+    LOG.warn("Synthesis in progress – stop playback before training.");
+    return;
+  }
   if (!REC.pcm || REC.training) return;
+  
+  const spokenText = document.getElementById('spoken-text').value.trim();
+  if (!spokenText) {
+    LOG.err("Please enter the text you spoke in the recording before training.");
+    document.getElementById('train-status').textContent = "error: missing spoken text";
+    REC.training = false;
+    return;
+  }
+  
+  STATE.trainSession++;
+  const myTrainSession = STATE.trainSession;
+  
   REC.training = true;
   document.getElementById('btn-train').disabled = true;
   document.getElementById('btn-analyze').disabled = true;
+  document.getElementById('spoken-text').disabled = true;
 
   const EPOCHS = 60;
   const LR     = 0.004;
@@ -3908,7 +3975,19 @@ async function trainConditioning() {
   let adamStep = 0;
 
   const targetVoiceVec = new Float32Array(STATE.voiceVec);
-  const trainPhonemes  = Array.from({length: Math.min(nFrames, 16)}, (_, i) => (i * 7 + 3) % 50);
+
+  const lang = document.getElementById('lang-sel').value;
+  const g2pFn = G2P[lang] || G2P.en;
+  const spokenPhonemes = g2pFn(spokenText);
+  const basePhonemes = spokenPhonemes.map(p => PHONEMES[p] ? PHONEMES[p].idx : 0);
+
+  let trainPhonemes = [];
+  while (trainPhonemes.length < nFrames) {
+    trainPhonemes = trainPhonemes.concat(basePhonemes);
+  }
+  trainPhonemes = trainPhonemes.slice(0, nFrames);
+
+  LOG.ok(`Using ${trainPhonemes.length} phonemes from spoken text: "${spokenText}"`);
 
   // Reduce epochs on mobile — each epoch has a full MVC forward
   const ACTUAL_EPOCHS = IS_MOBILE ? 20 : EPOCHS;
@@ -3930,18 +4009,35 @@ async function trainConditioning() {
       document.getElementById('train-status').textContent = `epoch ${epoch+1} · loss: ${lastLoss.toFixed(5)}`;
     }
 
+    if (STATE.trainSession !== myTrainSession) {
+      LOG.warn("Training cancelled by new session");
+      return;
+    }
+
     // Forward: use async chunked path on mobile
     const predMel = IS_MOBILE
-      ? await mvcForwardAsync(trainPhonemes, nFrames, targetVoiceVec, -1)
+      ? await mvcForwardAsync(trainPhonemes, nFrames, targetVoiceVec, myTrainSession, false)
       : STATE.mvc.forward(trainPhonemes, nFrames, targetVoiceVec);
-    if (!predMel) break; // shouldn't happen (session -1 never cancels)
+    if (!predMel) return; // cancelled
+
+    // Normalise targetMel to same tanh range as predMel
+    let melMin = Infinity, melMax = -Infinity;
+    for (let i = 0; i < targetMel.length; i++) {
+      if (targetMel[i] < melMin) melMin = targetMel[i];
+      if (targetMel[i] > melMax) melMax = targetMel[i];
+    }
+    const melRange = melMax - melMin || 1;
+    const targetNormalised = new Float32Array(targetMel.length);
+    for (let i = 0; i < targetMel.length; i++) {
+      targetNormalised[i] = Math.tanh(2 * (targetMel[i] - melMin) / melRange - 1);
+    }
 
     // Mel MSE loss against recording-derived target
     let loss = 0;
     const melGrad = new Float32Array(predMel.length);
-    const len = Math.min(predMel.length, targetMel.length);
+    const len = Math.min(predMel.length, targetNormalised.length);
     for (let i = 0; i < len; i++) {
-      const diff = predMel[i] - targetMel[i];
+      const diff = predMel[i] - targetNormalised[i];
       loss += diff * diff;
       melGrad[i] = 2 * diff / len;
     }
@@ -4072,7 +4168,7 @@ function startCursorAnimation(durationSec, startFrac = 0) {
   const canvas = document.getElementById('wave-canvas');
   if (!cursor || !canvas) return;
 
-  if (CURSOR.raf) cancelAnimationFrame(CURSOR.raf);
+  stopCursorAnimation();
   CURSOR.active    = true;
   CURSOR.startTime = performance.now();
   CURSOR.duration  = durationSec * 1000;

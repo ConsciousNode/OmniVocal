@@ -80,6 +80,18 @@ iframe.contentWindow.postMessage({
 
 ---
 
+## Changelog
+
+### v0.6-phase6 — 2026-06-07 · Vael Interim
+
+- **Tabbed UI** — interface reorganized into tabs. Pop Studio surfaced as a first-class tab rather than a buried panel. Cleaner navigation across synthesis, training, analysis, and `.pop2` I/O workflows.
+- **Playback cursor** — cursor tracks position across the mel spectrogram canvas during audio playback. Visual synchronization between audio and the spectrogram it came from.
+- **Mel zoom** — zoom in/out controls on the mel canvas (± buttons, zoom label). `drawMelCanvas` patched to store data and redraw at current zoom level on resize or zoom change. The spectrogram is now inspectable at fine resolution.
+- **Learned Snake α** — Snake activation parameter α is now learned per-layer rather than fixed at 1. `x + (1/α)·sin²(αx)` with α initialized to 1 and updated by optimizer. Gives the model more expressive control over activation curvature per layer.
+- **Learned Duration MLP** — duration prediction now learned via a small MLP rather than rule-based phoneme length assignment. Duration model trained jointly with the acoustic model; produces more natural prosody on novel inputs.
+- **Principled base init** — weight initialization tightened across all layers. Near-identity bias for SSM matrices, mel-projection for output layer, sinusoidal phoneme embeddings. More stable early training, faster convergence.
+- **FFT voice analysis** — incoming voice recordings are analyzed via FFT before fine-tuning. Provides spectral fingerprint for voice identity conditioning.
+
 ## Architecture notes
 
 - **BitLinear / TMAC** — all weight matrices are ternary (-1, 0, +1) with a learned scalar gamma. Packed 4-per-byte. Fast on any hardware, no GPU required.
