@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OmniVocal Phase 6 — ConsciousNode SoftWorks</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;800&display=swap');
+  /* fonts: system stacks only — no network (xinu) */
 
   :root {
     --bg:       #080a0e;
@@ -34,7 +34,7 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 13px;
     line-height: 1.5;
     min-height: 100vh;
@@ -58,7 +58,7 @@
   }
 
   .brand-name {
-    font-family: 'Syne', sans-serif;
+    font-family: 'Syne', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     font-weight: 800;
     font-size: 20px;
     color: var(--accent);
@@ -141,7 +141,7 @@
     background: var(--bg2);
     color: var(--text);
     border: 1px solid var(--border2);
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 14px;
     padding: 12px;
     resize: none;
@@ -160,7 +160,7 @@
 
   /* ── BUTTONS ── */
   button {
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 11px;
     cursor: pointer;
     border: 1px solid var(--border2);
@@ -217,7 +217,7 @@
     color: var(--accent);
     font-size: 12px;
     padding: 1px 6px;
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     transition: background 0.1s;
   }
   .ph-chip.active {
@@ -486,7 +486,7 @@
   /* ── LOG ── */
   #log {
     background: var(--bg);
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 10px;
     color: #3d6b8a;
     padding: 10px;
@@ -595,7 +595,7 @@
     background: var(--bg2);
     border: 1px solid var(--border);
     color: var(--text);
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 12px;
     padding: 4px 8px;
     flex: 1;
@@ -630,7 +630,7 @@
     background: var(--bg2);
     color: var(--text);
     border: 1px solid var(--border2);
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;
     font-size: 11px;
     padding: 5px 8px;
     outline: none;
@@ -907,7 +907,7 @@
       </div>
       <div class="rp-section" style="border-top:1px solid var(--border);padding-top:12px;">
         <div class="rp-title">postMessage API</div>
-        <div style="font-size:10px;color:var(--dim);line-height:1.8;font-family:'Space Mono',monospace;">
+        <div style="font-size:10px;color:var(--dim);line-height:1.8;font-family:'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace;">
           <div style="color:var(--dim);margin-bottom:4px;">// embed in iframe, control from host:</div>
           <div><span style="color:var(--accent);">speak</span> · stop · getStatus</div>
           <div><span style="color:var(--accent);">getVoiceVec</span> · setVoiceVec</div>
@@ -3047,7 +3047,7 @@ function exportWAV() {
     a.style.cssText = `
       display:block; margin:8px 0 0; padding:10px 16px;
       background:var(--green); color:#000;
-      font-family:'Space Mono',monospace; font-size:12px; font-weight:700;
+      font-family:'Space Mono', ui-monospace, 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', monospace; font-size:12px; font-weight:700;
       text-decoration:none; letter-spacing:1px; text-align:center;
     `;
     // Insert below the export button
